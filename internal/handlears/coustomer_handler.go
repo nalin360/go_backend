@@ -1,19 +1,17 @@
 package handlears
 
 import (
-	"encoding/json"
 	"net/http"
 
-	"wealtharena.in/api/internal/httputil"
 	"wealtharena.in/api/internal/jsons"
 	"wealtharena.in/api/internal/services"
-	"wealtharena.in/api/internal/store"
+
 )
 
 type CoustomerHandlears struct {
 	services services.Service
 }
-
+// NewCoustomerHandler creates a new instance of CoustomerHandlears
 func CoustomerHandler(service services.Service) *CoustomerHandlears {
 	return &CoustomerHandlears{
 		services: service,
@@ -26,40 +24,6 @@ type CreateCustomerRequest struct {
 	CustAddress  string `json:"cust_address"`
 	PasswordHash string `json:"password_hash"`
 }
-
-func (h *CoustomerHandlears) CreateCustomer(w http.ResponseWriter, r *http.Request) {
-
-	var req CreateCustomerRequest
-	// decode request body
-	custErr :=  httputil.NewBadRequest(nil,"invalid request body")
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsons.Write(w, http.StatusBadRequest, custErr)
-		return
-	}
-
-	// validation
-
-
-	params := store.CreateCustomerParams{
-		CustName:     req.CustName,
-		CustEmail:    req.CustEmail,
-		CustAddress:  req.CustAddress,
-		PasswordHash: req.PasswordHash,
-	}
-	// call create customer service
-	coustomer, err := h.services.CreateCustomer(r.Context(), params)
-
-	errs := httputil.NewBadRequest(err,"invalid request body")
-	if err != nil {
-		jsons.Write(w, http.StatusInternalServerError, errs)
-		return
-	}
-
-	// write response
-	jsons.Write(w, http.StatusOK, coustomer)
-}
-
-
 
 //Get Customer by id
 func (h *CoustomerHandlears) GetCustomer(w http.ResponseWriter, r *http.Request) {	
@@ -77,5 +41,5 @@ func (h *CoustomerHandlears) ListCustomers(w http.ResponseWriter, r *http.Reques
 		jsons.Write(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	jsons.Write(w, http.StatusOK, coustomers)
+	jsons.Write(w, http.StatusOK, toCustomerResponseList(coustomers))
 }

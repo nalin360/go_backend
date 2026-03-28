@@ -35,10 +35,14 @@ func (e *CustomError) WithMetadata(key string, value interface{}) *CustomError {
 
 // NewFromError creates a CustomError from an existing error.
 func NewFromError(err error, statusCode int, userMessage, errType, errCode string, retryable bool) *CustomError {
+	msg := userMessage
+	if err != nil {
+		msg = err.Error()
+	}
 	return &CustomError{
 		BaseErr:     err,
 		StatusCode:  statusCode,
-		Message:     err.Error(),
+		Message:     msg,
 		UserMessage: userMessage,
 		ErrType:     errType,
 		ErrCode:     errCode,

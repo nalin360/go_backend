@@ -1,6 +1,6 @@
 # WealthArena API — Architecture Documentation
 
-> A Go REST API for managing products, customers, and orders, built with **Clean Architecture** principles.
+> A Go REST API for managing products, customers, orders, and authentication, built with **Clean Architecture** principles.
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## Overview
 
-**WealthArena API** (`wealtharena.in/api`) is a RESTful backend service built in Go. It provides CRUD operations for products, customers, and orders backed by PostgreSQL. The codebase uses **sqlc** for type-safe database queries and **chi** for HTTP routing.
+**WealthArena API** (`wealtharena.in/api`) is a RESTful backend service built in Go. It provides CRUD operations for products, customers, and orders backed by PostgreSQL, with JWT-based authentication and bcrypt password hashing. The codebase uses **sqlc** for type-safe database queries and **chi** for HTTP routing.
 
 ---
 
@@ -34,6 +34,7 @@
 | Database        | PostgreSQL                                                               |
 | DB Driver       | [pgx v5](https://github.com/jackc/pgx) (connection pooling via `pgxpool`) |
 | Code Generation | [sqlc](https://sqlc.dev/)                                                   |
+| Auth            | [golang-jwt/jwt v5](https://github.com/golang-jwt/jwt) + [bcrypt](https://pkg.go.dev/golang.org/x/crypto/bcrypt) |
 | Env Management  | [godotenv](https://github.com/joho/godotenv)                                |
 | Hot Reload      | [Air](https://github.com/air-verse/air)                                     |
 
@@ -51,9 +52,12 @@ go_backend/
 │   ├── env/                    # Environment variable helpers
 │   │   └── env.go
 │   ├── handlears/              # HTTP handlers (controllers)
-│   │   └── handler.go
-│   ├── httputil/               # HTTP utility functions
-│   │   └── headers.go
+│   │   ├── handler.go          # Product handlers
+│   │   ├── auth_handler.go     # Auth handlers (login, register)
+│   │   ├── coustomer_handler.go # Customer handlers (list, get)
+│   │   └── response.go         # Response DTOs (strips sensitive fields)
+│   ├── httputil/               # Structured error handling
+│   │   └── errors.go           # CustomError type with error constructors
 │   ├── jsons/                  # JSON response writer
 │   │   └── json.go
 │   ├── services/               # Business logic layer
@@ -111,9 +115,15 @@ The `services` package defines a `Service` **interface**, not a concrete struct:
 
 ```go
 type Service interface {
+    // Products
     ListProduct(ctx context.Context) ([]store.Product, error)
     CreateProduct(ctx context.Context, req store.CreateProductParams) (store.Product, error)
     GetProduct(ctx context.Context, id int64) (store.Product, error)
+    // Customers
+    CreateCustomer(ctx context.Context, req store.CreateCustomerParams) (store.Customer, error)
+    GetCustomerByEmail(ctx context.Context, email string) (store.Customer, error)
+    ListCustomers(ctx context.Context) ([]store.Customer, error)
+    // ... and more
 }
 ```
 
@@ -124,15 +134,15 @@ Handlers depend on this **interface**, not the implementation. This means:
 
 ### 3. Separation of Concerns
 
-| Package        | Responsibility                    | Knows about             |
-| -------------- | --------------------------------- | ----------------------- |
-| `cmd/`       | Bootstrap & wiring                | All packages            |
-| `handlears/` | HTTP request/response handling    | `services`, `store` |
-| `services/`  | Business logic                    | `store`               |
-| `store/`     | Database queries (auto-generated) | PostgreSQL              |
-| `jsons/`     | JSON response utility             | `net/http`            |
-| `env/`       | Environment variable reading      | `os`                  |
-| `httputil/`  | HTTP header extraction            | `net/http`            |
+| Package        | Responsibility                      | Knows about             |
+| -------------- | ----------------------------------- | ----------------------- |
+| `cmd/`       | Bootstrap & wiring                  | All packages            |
+| `handlears/` | HTTP request/response handling       | `services`, `store` |
+| `services/`  | Business logic                      | `store`               |
+| `store/`     | Database queries (auto-generated)   | PostgreSQL              |
+| `jsons/`     | JSON response utility               | `net/http`            |
+| `env/`       | Environment variable reading        | `os`                  |
+| `httputil/`  | Structured error types & builders   | `net/http`            |
 
 ### 4. Code Generation over Boilerplate
 
@@ -157,9 +167,10 @@ graph TD
 
     subgraph INTERNAL["internal/ (Private)"]
         subgraph HTTP_LAYER["HTTP Layer"]
-            Handlers["handlears/<br/>handler.go"]
+            Handlers["handlears/<br/>handler.go<br/>auth_handler.go<br/>coustomer_handler.go"]
+            ResponseDTO["handlears/<br/>response.go"]
             JSON["jsons/<br/>json.go"]
-            HTTPUtil["httputil/<br/>headers.go"]
+            HTTPUtil["httputil/<br/>errors.go"]
         end
 
         subgraph BIZ_LAYER["Business Layer"]
@@ -180,6 +191,7 @@ graph TD
     Main --> ENV
     API --> Handlers
     Handlers --> Services
+    Handlers --> ResponseDTO
     Handlers --> JSON
     Handlers --> HTTPUtil
     Services --> Store
@@ -325,10 +337,54 @@ Wires everything together:
 | `Recoverer` | Catches panics, returns 500 instead of crashing |
 | `Timeout`   | Cancels requests after 60 seconds               |
 
-### `internal/handlears/handler.go` — HTTP Handlers
+### `internal/handlears/` — HTTP Handlers
 
-- Accepts HTTP requests, validates input, calls service, returns JSON
-- Uses a **Data Transfer Object (DTO)** pattern — `createProductRequest` is different from `store.CreateProductParams` to handle date string → `pgtype.Date` conversion
+Three handler files, each owning a domain:
+
+| File | Struct | Routes | Description |
+|------|--------|--------|-------------|
+| `handler.go` | `handlears` | `/products` | Product CRUD |
+| `auth_handler.go` | `AuthHandler` | `/auth` | Login (JWT) & Register (bcrypt) |
+| `coustomer_handler.go` | `CoustomerHandlears` | `/coustomer` | Customer listing & lookup |
+
+- Uses **request DTOs** — e.g. `createProductRequest` handles date string → `pgtype.Date` conversion
+- Uses **response DTOs** via `response.go` — strips sensitive fields like `password_hash` before sending to the client
+
+### `internal/handlears/response.go` — Response DTOs
+
+Maps sqlc-generated models to safe API responses:
+
+```go
+// CustomerResponse omits PasswordHash — never leaks in API responses
+type CustomerResponse struct {
+    CustID      int64  `json:"cust_id"`
+    CustName    string `json:"cust_name"`
+    CustEmail   string `json:"cust_email"`
+    CustAddress string `json:"cust_address"`
+    IsAdmin     bool   `json:"is_admin"`
+}
+```
+
+Helper functions `toCustomerResponse()` and `toCustomerResponseList()` handle the mapping. This pattern is necessary because the `store.Customer` struct is sqlc-generated and cannot be modified.
+
+### `internal/httputil/errors.go` — Structured Errors
+
+Defines a `CustomError` type implementing the `error` interface with structured fields:
+
+```go
+type CustomError struct {
+    BaseErr     error                  `json:"-"`
+    StatusCode  int                    `json:"status_code"`
+    Message     string                 `json:"message"`
+    UserMessage string                 `json:"user_message"`
+    ErrType     string                 `json:"error_type"`
+    ErrCode     string                 `json:"error_code"`
+    Retryable   bool                   `json:"retryable"`
+    Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+```
+
+Convenience constructors: `NewBadRequest()`, `NewNotFound()`, `NewUnauthorized()`, `NewInternalError()`
 
 ### `internal/services/service.go` — Business Logic
 
@@ -361,6 +417,13 @@ Extracts common headers (`X-Request-ID`, `Authorization`) from incoming requests
 
 ## API Endpoints
 
+### Auth
+
+| Method | Path               | Handler           | Description                              |
+| ------ | ------------------ | ----------------- | ---------------------------------------- |
+| POST   | `/auth/register` | `CreateCustomer`| Register new customer (bcrypt + DTO)     |
+| POST   | `/auth/login`    | `Login`         | Authenticate & return JWT token          |
+
 ### Products
 
 | Method | Path               | Handler           | Description              |
@@ -368,6 +431,59 @@ Extracts common headers (`X-Request-ID`, `Authorization`) from incoming requests
 | GET    | `/products`      | `ListProducts`  | List products (limit 10) |
 | POST   | `/products`      | `CreateProduct` | Create a new product     |
 | GET    | `/products/{id}` | `GetProduct`    | Get product by ID        |
+
+### Customers
+
+| Method | Path               | Handler           | Description                |
+| ------ | ------------------ | ----------------- | -------------------------- |
+| GET    | `/coustomer`     | `ListCustomers` | List customers (limit 10)  |
+
+---
+
+### Auth Flow
+
+```mermaid
+sequenceDiagram
+    participant C as 🌐 Client
+    participant H as AuthHandler
+    participant S as Service
+    participant DB as Store
+    participant PG as 🐘 PostgreSQL
+
+    Note over C,PG: Registration
+    C->>H: POST /auth/register<br/>{name, email, password}
+    Note over H: bcrypt.GenerateFromPassword()
+    H->>S: CreateCustomer(params with hashed password)
+    S->>DB: INSERT INTO customers
+    DB->>PG: SQL query
+    PG-->>H: store.Customer
+    Note over H: toCustomerResponse()<br/>strips password_hash
+    H-->>C: 201 Created<br/>CustomerResponse (no hash)
+
+    Note over C,PG: Login
+    C->>H: POST /auth/login<br/>{email, password}
+    H->>S: GetCustomerByEmail(email)
+    S->>DB: SELECT * FROM customers WHERE email = $1
+    DB-->>H: store.Customer
+    Note over H: bcrypt.CompareHashAndPassword()
+    Note over H: jwt.NewWithClaims(HS256, claims)
+    H-->>C: 200 OK<br/>{"token": "eyJhbGci..."}
+```
+
+### JWT Claims Structure
+
+```json
+{
+  "sub": 1,              // customer ID
+  "email": "user@example.com",
+  "exp": 1743350400,     // expires in 7 days
+  "is_admin": false,
+  "role": "customer",
+  "iat": 1742745600      // issued at
+}
+```
+
+---
 
 ### Example: Create Product
 
@@ -400,6 +516,36 @@ HTTP/1.1 201 Created
 ```
 
 > **Note:** `prodc_price` is stored in **cents** (₹125.00 = 12500).
+
+### Example: Register Customer
+
+**Request:**
+
+```json
+POST /auth/register
+Content-Type: application/json
+
+{
+  "cust_name": "Nalin",
+  "cust_email": "nalin@example.com",
+  "cust_address": "123 Main St",
+  "password": "mypassword123"
+}
+```
+
+**Response (password_hash is excluded):**
+
+```json
+HTTP/1.1 201 Created
+
+{
+  "cust_id": 1,
+  "cust_name": "Nalin",
+  "cust_email": "nalin@example.com",
+  "cust_address": "123 Main St",
+  "is_admin": false
+}
+```
 
 ---
 
@@ -447,5 +593,8 @@ graph LR
 | **pgxpool** over single conn | Connection pooling for concurrent request handling   |
 | **Interface-based services** | Enables mocking for tests, decouples layers          |
 | **DTO pattern in handlers**  | Decouples API contract from DB schema                |
+| **Response DTOs**            | Prevents leaking sensitive fields (password_hash)    |
+| **JWT + bcrypt**             | Industry-standard stateless auth with secure hashing |
+| **Structured errors**        | Consistent error shape across all endpoints          |
 | **`internal/` packages**   | Compiler-enforced encapsulation                      |
 | **Prices in cents**          | Avoids floating-point precision issues               |

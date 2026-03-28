@@ -53,6 +53,15 @@ func (app *application) mount() http.Handler {
 	// services
 	productsService := services.NewService(*queries)
 
+
+	// auth handler
+	authHandler := handlears.NewAuthHandler(productsService)
+
+	router.Route("/auth", func(r chi.Router) {
+		r.Post("/login", authHandler.Login)
+		r.Post("/register", authHandler.CreateCustomer)
+	})
+
 	// handlears
 	productHandlear := handlears.ProductHandler(productsService)
 
@@ -68,7 +77,6 @@ func (app *application) mount() http.Handler {
 	// coustomer handler
 	router.Route("/coustomer", func(r chi.Router) {
 		r.Get("/", customerHandler.ListCustomers)
-		r.Post("/", customerHandler.CreateCustomer)
 		// r.Get("/{id}", customerHandler.GetCustomer)
 		// r.Get("/{email}", customerHandler.GetCustomerByEmail)
 	})
