@@ -7,11 +7,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"wealtharena.in/api/internal/handlears"
+	"wealtharena.in/api/internal/services"
+	"wealtharena.in/api/internal/store"
 )
 
 type dbConfig struct {
-	domainString string
+	dsn string
 }
 type config struct {
 	addr string
@@ -21,7 +24,7 @@ type config struct {
 type application struct {
 	config config
 	// logger
-	// db driver
+	db *pgxpool.Pool
 }
 
 // mount
@@ -29,7 +32,7 @@ type application struct {
 func (app *application) mount() http.Handler {
 	router := chi.NewRouter()
 	// middleware
-	router.Use(middleware.Logger) // 
+	router.Use(middleware.Logger) //
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
@@ -44,26 +47,45 @@ func (app *application) mount() http.Handler {
 		res.Write([]byte("Hello World"))
 	})
 
+	// store
+	queries := store.New(app.db)
 
-	// products handlear
-	productHandlear := handlears.NewHandler(nil)
-	router.Get("/products", productHandlear.ListProducts)
+	// services
+	productsService := services.NewService(*queries)
 
+	// handlears
+	productHandlear := handlears.ProductHandler(productsService)
+
+	router.Route("/products", func(r chi.Router) {
+		r.Get("/", productHandlear.ListProducts)
+		r.Post("/", productHandlear.CreateProduct)
+		r.Get("/{id}", productHandlear.GetProduct)
+	})
+
+
+	// handler
+	customerHandler := handlears.CoustomerHandler(productsService)
+	// coustomer handler
+	router.Route("/coustomer", func(r chi.Router) {
+		r.Get("/", customerHandler.ListCustomers)
+		r.Post("/", customerHandler.CreateCustomer)
+		// r.Get("/{id}", customerHandler.GetCustomer)
+		// r.Get("/{email}", customerHandler.GetCustomerByEmail)
+	})
 	return router
 }
 
 // run
 
-
 func (app *application) run(h http.Handler) error {
 	// graceful shutdown script
 
 	srv := &http.Server{
-		Addr: app.config.addr,
-		Handler: h,
-		ReadTimeout: 10 * time.Second,
+		Addr:         app.config.addr,
+		Handler:      h,
+		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
-		IdleTimeout: 10 * time.Second,
+		IdleTimeout:  10 * time.Second,
 	}
 
 	log.Printf("Starting server on at `http://localhost%s`", app.config.addr)

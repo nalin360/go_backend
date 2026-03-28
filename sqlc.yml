@@ -1,0 +1,20 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    
+    # 1. Point to the folder containing your migrations (schema)
+    schema: "db/migrations"
+    
+    # 2. Point to the folder containing all your query files
+    queries: "db/queries"
+    
+    gen:
+      go:
+        # 3. Tell it to output the code into your internal/store package
+        package: "store"
+        out: "internal/store"
+        sql_package: "pgx/v5"
+        
+        # Optional but highly recommended: 
+        # Generates JSON tags for your DB structs automatically!
+        emit_json_tags: true
